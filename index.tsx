@@ -24,12 +24,15 @@ const Native = IS_DISCORD_DESKTOP
 
 const MOCHA_BASE = "https://mocha.my";
 const MOCHA_SERVICE_LABEL = "Mocha";
+const MOCHA_INTERCEPT_THRESHOLD = 9 * 1024 * 1024;
 const DIRECT_UPLOAD_LIMIT = 50 * 1024 * 1024;
 const CHUNK_SIZE = 10 * 1024 * 1024;
 const PART_RETRIES = 3;
 
 let uploadAddFilesInterceptor: ((event: unknown) => void) | null = null;
 let pasteEventListener: ((event: ClipboardEvent) => void) | null = null;
+let dragOverEventListener: ((event: DragEvent) => void) | null = null;
+let dropEventListener: ((event: DragEvent) => void) | null = null;
 
 type UploadAddFilesEvent = {
     type: string;
@@ -215,29 +218,52 @@ function getDiscordUploadLimit(payload?: UploadAddFilesEvent): number {
 function shouldInterceptUploadFiles(files: readonly File[], payload: UploadAddFilesEvent): boolean {
     if (!settings.store.bypassDiscordUploadOnlyOverLimit) return true;
 
-    const discordLimit = getDiscordUploadLimit(payload);
+    const discordLimit = Math.min(getDiscordUploadLimit(payload), MOCHA_INTERCEPT_THRESHOLD);
 
     return files.some(file => file.size > discordLimit);
 }
 
-function extractFilesFromValue(value: unknown): File[] {
+function isArrayLikeFileContainer(value: unknown): value is { length: number; [index: number]: unknown; } {
+    return Boolean(
+        value
+        && typeof value === "object"
+        && "length" in value
+        && typeof value.length === "number"
+        && Number.isFinite(value.length)
+    );
+}
+
+function extractFilesFromValue(value: unknown, seen = new Set<unknown>()): File[] {
+    if (!value || seen.has(value)) return [];
     if (value instanceof File) return [value];
+    if (typeof value !== "object") return [];
 
-    if (!Array.isArray(value)) return [];
+    seen.add(value);
 
-    return value.flatMap(entry => {
-        if (entry instanceof File) return [entry];
+    if (Array.isArray(value)) {
+        return value.flatMap(entry => extractFilesFromValue(entry, seen));
+    }
 
-        if (!entry || typeof entry !== "object") return [];
+    if (typeof DataTransferItem !== "undefined" && value instanceof DataTransferItem) {
+        const file = value.kind === "file" ? value.getAsFile() : null;
+        return file ? [file] : [];
+    }
 
-        const uploadFile = "file" in entry ? entry.file : null;
-        if (uploadFile instanceof File) return [uploadFile];
+    if (isArrayLikeFileContainer(value)) {
+        return Array.from({ length: value.length }, (_, index) => value[index])
+            .flatMap(entry => extractFilesFromValue(entry, seen));
+    }
 
-        const item = "item" in entry && entry.item && typeof entry.item === "object" ? entry.item : null;
-        if (!item || !("file" in item)) return [];
-
-        return item.file instanceof File ? [item.file] : [];
-    });
+    const entry = value as Record<string, unknown>;
+    return [
+        entry.file,
+        entry.upload,
+        entry.item,
+        entry.fileItem,
+        entry.uploadItem,
+        entry.originalFile,
+        entry.platformFile
+    ].flatMap(candidate => extractFilesFromValue(candidate, seen));
 }
 
 function interceptUploadAddFiles(event: unknown): void {
@@ -279,6 +305,51 @@ function handlePaste(event: ClipboardEvent) {
     event.preventDefault();
     event.stopPropagation();
 
+    void uploadProvidedFiles(files);
+}
+
+function getFilesFromDataTransfer(dataTransfer: DataTransfer | null): File[] {
+    if (!dataTransfer) return [];
+
+    return Array.from(new Set([
+        ...Array.from(dataTransfer.files || []),
+        ...extractFilesFromValue(dataTransfer.items)
+    ]));
+}
+
+function stopDiscordFileEvent(event: Event) {
+    event.preventDefault();
+    event.stopPropagation();
+    event.stopImmediatePropagation();
+}
+
+function handleDragOver(event: DragEvent) {
+    const files = getFilesFromDataTransfer(event.dataTransfer);
+    if (!files.length) return;
+
+    if (!settings.store.bypassDiscordUpload || !isConfigured()) return;
+    if (!shouldInterceptUploadFiles(files, {
+        type: "DROP",
+        draftType: DraftType.ChannelMessage
+    })) return;
+
+    stopDiscordFileEvent(event);
+    if (event.dataTransfer) {
+        event.dataTransfer.dropEffect = "copy";
+    }
+}
+
+function handleDrop(event: DragEvent) {
+    const files = getFilesFromDataTransfer(event.dataTransfer);
+    if (!files.length) return;
+
+    if (!settings.store.bypassDiscordUpload || !isConfigured()) return;
+    if (!shouldInterceptUploadFiles(files, {
+        type: "DROP",
+        draftType: DraftType.ChannelMessage
+    })) return;
+
+    stopDiscordFileEvent(event);
     void uploadProvidedFiles(files);
 }
 
@@ -671,6 +742,11 @@ function getFilenameFromBlob(fileBlob: Blob, sourceUrl?: string): string {
     return "upload.bin";
 }
 
+function getNativeFilePath(fileBlob: Blob): string | null {
+    const path = (fileBlob as Blob & { path?: unknown; }).path;
+    return typeof path === "string" && path.length > 0 ? path : null;
+}
+
 function createUploadKey(): string {
     return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
@@ -711,14 +787,24 @@ async function uploadToMocha(fileBlob: Blob, filename: string): Promise<string> 
         });
 
         try {
-            const result = await Native.uploadToMocha(
-                await fileBlob.arrayBuffer(),
-                filename,
-                fileBlob.type || "application/octet-stream",
-                settings.store.apiKey.trim(),
-                settings.store.shareExpiry,
-                uploadKey
-            );
+            const nativePath = getNativeFilePath(fileBlob);
+            const result = nativePath
+                ? await Native.uploadPathToMocha(
+                    nativePath,
+                    filename,
+                    fileBlob.type || "application/octet-stream",
+                    settings.store.apiKey.trim(),
+                    settings.store.shareExpiry,
+                    uploadKey
+                )
+                : await Native.uploadToMocha(
+                    await fileBlob.arrayBuffer(),
+                    filename,
+                    fileBlob.type || "application/octet-stream",
+                    settings.store.apiKey.trim(),
+                    settings.store.shareExpiry,
+                    uploadKey
+                );
 
             const finalProgress = await Native.getUploadProgress(uploadKey).catch(() => null);
             applyNativeProgress(finalProgress);
@@ -1095,6 +1181,11 @@ export default definePlugin({
 
         pasteEventListener = event => handlePaste(event);
         document.addEventListener("paste", pasteEventListener, true);
+
+        dragOverEventListener = event => handleDragOver(event);
+        dropEventListener = event => handleDrop(event);
+        document.addEventListener("dragover", dragOverEventListener, true);
+        document.addEventListener("drop", dropEventListener, true);
     },
     stop() {
         if (!uploadAddFilesInterceptor) {
@@ -1111,6 +1202,16 @@ export default definePlugin({
         if (pasteEventListener) {
             document.removeEventListener("paste", pasteEventListener, true);
             pasteEventListener = null;
+        }
+
+        if (dragOverEventListener) {
+            document.removeEventListener("dragover", dragOverEventListener, true);
+            dragOverEventListener = null;
+        }
+
+        if (dropEventListener) {
+            document.removeEventListener("drop", dropEventListener, true);
+            dropEventListener = null;
         }
     },
     shouldBypassDiscordUploadSizeCheck(): boolean {

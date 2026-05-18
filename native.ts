@@ -1,4 +1,5 @@
 import { IpcMainInvokeEvent } from "electron";
+import { open, readFile, stat } from "fs/promises";
 
 const MOCHA_BASE = "https://mocha.my";
 const DIRECT_UPLOAD_LIMIT = 50 * 1024 * 1024;
@@ -30,6 +31,10 @@ type NativeUploadSession = {
 };
 
 const activeUploads = new Map<string, NativeUploadSession>();
+
+function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+    return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+}
 
 function today(): string {
     return new Date().toISOString().split("T")[0];
@@ -425,6 +430,114 @@ async function uploadMultipart(
     return getFileId(await completeResponse.json());
 }
 
+async function uploadMultipartFromPath(
+    uploadKey: string,
+    apiKey: string,
+    filePath: string,
+    size: number,
+    filename: string,
+    mimeType: string,
+    destinationFolder: string
+): Promise<string> {
+    const remotePath = `${destinationFolder}/`;
+    const initResponse = await fetchWithTimeout(`${MOCHA_BASE}/api/files/multipart/init`, {
+        method: "POST",
+        headers: authHeaders(apiKey, {
+            "Content-Type": "application/json"
+        }),
+        body: JSON.stringify({
+            originalName: filename,
+            path: remotePath,
+            size,
+            mimeType,
+            partSizeBytes: CHUNK_SIZE
+        })
+    }, 30 * 1000);
+
+    if (!initResponse.ok) {
+        throw new Error(`Multipart init failed: ${initResponse.status} ${await initResponse.text()}`);
+    }
+
+    const initData = await initResponse.json();
+    const session = {
+        strategy: initData.strategy,
+        uploadId: initData.uploadId,
+        key: initData.key,
+        nodeId: initData.nodeId,
+        originalName: filename,
+        path: remotePath,
+        directUploadEnabled: initData.directUploadEnabled
+    };
+
+    if (!session.strategy || !session.uploadId || !session.key || !session.nodeId) {
+        throw new Error(`Invalid multipart init response: ${JSON.stringify(initData)}`);
+    }
+
+    const totalParts = Math.ceil(size / CHUNK_SIZE);
+    const parts: Array<{ partNumber: number; etag: string; }> = [];
+    let completedBytes = 0;
+    const handle = await open(filePath, "r");
+
+    try {
+        for (let partNumber = 1; partNumber <= totalParts; partNumber++) {
+            getUploadSession(uploadKey);
+
+            const offset = (partNumber - 1) * CHUNK_SIZE;
+            const readSize = Math.min(CHUNK_SIZE, size - offset);
+            const buffer = Buffer.allocUnsafe(readSize);
+            const { bytesRead } = await handle.read(buffer, 0, readSize, offset);
+            const chunk = toArrayBuffer(buffer.subarray(0, bytesRead));
+            const etag = await uploadPart(uploadKey, apiKey, session, chunk, partNumber, totalParts, completedBytes, size);
+
+            completedBytes += bytesRead;
+            parts.push({ partNumber, etag });
+            setProgress(uploadKey, {
+                phase: "uploading",
+                percent: Math.min(99, Math.round(completedBytes / size * 100)),
+                transferredBytes: completedBytes,
+                totalBytes: size,
+                partNumber,
+                totalParts,
+                status: `Uploaded part ${partNumber}/${totalParts}.`
+            });
+        }
+    } catch (error) {
+        await abortMultipart(apiKey, session, totalParts);
+        throw error;
+    } finally {
+        await handle.close();
+    }
+
+    setProgress(uploadKey, {
+        phase: "uploading",
+        percent: 99,
+        transferredBytes: size,
+        totalBytes: size,
+        partNumber: totalParts,
+        totalParts,
+        status: "Finalizing multipart upload..."
+    });
+
+    const completeResponse = await fetchWithTimeout(`${MOCHA_BASE}/api/files/multipart/complete`, {
+        method: "POST",
+        headers: authHeaders(apiKey, {
+            "Content-Type": "application/json"
+        }),
+        body: JSON.stringify({
+            ...session,
+            size,
+            mimeType,
+            parts: parts.sort((a, b) => a.partNumber - b.partNumber)
+        })
+    }, 60 * 1000);
+
+    if (!completeResponse.ok) {
+        throw new Error(`Multipart complete failed: ${completeResponse.status} ${await completeResponse.text()}`);
+    }
+
+    return getFileId(await completeResponse.json());
+}
+
 async function createShare(apiKey: string, fileId: string, shareExpiry: string): Promise<string> {
     const payload: Record<string, unknown> = { fileId };
     const hours = expiryHours(shareExpiry);
@@ -492,6 +605,66 @@ export async function uploadToMocha(
             percent: 99,
             transferredBytes: fileBuffer.byteLength,
             totalBytes: fileBuffer.byteLength,
+            status: "Creating Mocha share link..."
+        });
+
+        return {
+            success: true,
+            url: await createShare(apiKey, fileId, shareExpiry)
+        };
+    } catch (error) {
+        setProgress(uploadKey, {
+            phase: activeUploads.get(uploadKey)?.cancelled ? "cancelled" : "failed",
+            status: error instanceof Error ? error.message : "Unknown error"
+        });
+
+        return {
+            success: false,
+            error: error instanceof Error ? error.message : "Unknown error"
+        };
+    } finally {
+        setTimeout(() => activeUploads.delete(uploadKey), 10 * 1000);
+    }
+}
+
+export async function uploadPathToMocha(
+    _: IpcMainInvokeEvent,
+    filePath: string,
+    filename: string,
+    mimeType: string,
+    apiKey: string,
+    shareExpiry: string,
+    uploadKey: string
+): Promise<NativeUploadResult> {
+    const fileStat = await stat(filePath);
+    activeUploads.set(uploadKey, {
+        cancelled: false,
+        controller: new AbortController(),
+        progress: {
+            phase: "preparing",
+            percent: 1,
+            transferredBytes: 0,
+            totalBytes: fileStat.size,
+            partNumber: 0,
+            totalParts: 0,
+            status: "Preparing upload..."
+        }
+    });
+
+    try {
+        const destinationFolder = `/discord/${today()}`;
+
+        await ensureFolder(apiKey, destinationFolder);
+
+        const fileId = fileStat.size <= DIRECT_UPLOAD_LIMIT
+            ? await uploadDirect(uploadKey, apiKey, toArrayBuffer(await readFile(filePath)), filename, mimeType || "application/octet-stream", destinationFolder)
+            : await uploadMultipartFromPath(uploadKey, apiKey, filePath, fileStat.size, filename, mimeType || "application/octet-stream", destinationFolder);
+
+        setProgress(uploadKey, {
+            phase: "sharing",
+            percent: 99,
+            transferredBytes: fileStat.size,
+            totalBytes: fileStat.size,
             status: "Creating Mocha share link..."
         });
 
