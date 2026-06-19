@@ -108,6 +108,16 @@ const settings = definePluginSettings({
             { label: "30 days", value: "30d" }
         ]
     },
+    chunkSizeMB: {
+        type: OptionType.NUMBER,
+        description: "Multipart upload chunk size in MB (min 5, max 1000)",
+        default: 10
+    },
+    maxChunks: {
+        type: OptionType.NUMBER,
+        description: "Maximum number of chunks per upload (chunk size is increased automatically if a file would need more than this)",
+        default: 10000
+    },
     debug: {
         type: OptionType.BOOLEAN,
         description: "Log Mocha upload requests and responses to the console",
@@ -430,6 +440,13 @@ function createUploadKey(): string {
     return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
+function chunkOptions(): { chunkSizeMB: number; maxChunks: number; } {
+    const chunkSizeMB = Math.min(1000, Math.max(5, Math.round(settings.store.chunkSizeMB) || 10));
+    const maxChunks = Math.min(10000, Math.max(1, Math.round(settings.store.maxChunks) || 10000));
+
+    return { chunkSizeMB, maxChunks };
+}
+
 function applyNativeProgress(progress: NativeUploadProgress | null) {
     if (!progress) return;
 
@@ -474,7 +491,8 @@ async function uploadToMocha(fileBlob: Blob, filename: string): Promise<string> 
                     fileBlob.type || "application/octet-stream",
                     settings.store.apiKey.trim(),
                     settings.store.shareExpiry,
-                    uploadKey
+                    uploadKey,
+                    chunkOptions()
                 )
                 : await Native.uploadToMocha(
                     await fileBlob.arrayBuffer(),
@@ -482,7 +500,8 @@ async function uploadToMocha(fileBlob: Blob, filename: string): Promise<string> 
                     fileBlob.type || "application/octet-stream",
                     settings.store.apiKey.trim(),
                     settings.store.shareExpiry,
-                    uploadKey
+                    uploadKey,
+                    chunkOptions()
                 );
 
             const finalProgress = await Native.getUploadProgress(uploadKey).catch(() => null);
@@ -530,7 +549,8 @@ async function uploadPathToMocha(filePath: string, filename: string, mimeType = 
             mimeType,
             settings.store.apiKey.trim(),
             settings.store.shareExpiry,
-            uploadKey
+            uploadKey,
+            chunkOptions()
         );
 
         const finalProgress = await Native.getUploadProgress(uploadKey).catch(() => null);
@@ -645,7 +665,8 @@ async function uploadFile(url: string): Promise<void> {
             filename,
             settings.store.apiKey.trim(),
             settings.store.shareExpiry,
-            uploadKey
+            uploadKey,
+            chunkOptions()
         );
 
         const finalProgress = await Native.getUploadProgress(uploadKey).catch(() => null);

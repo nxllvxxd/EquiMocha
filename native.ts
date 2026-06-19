@@ -3,7 +3,10 @@ import { open, stat } from "fs/promises";
 
 const MOCHA_BASE = "https://api.mocha.my";
 const MOCHA_WEB = "https://mocha.my";
-const CHUNK_SIZE = 10 * 1024 * 1024;
+const DEFAULT_CHUNK_SIZE = 10 * 1024 * 1024;
+const MIN_CHUNK_SIZE = 5 * 1024 * 1024;
+const MAX_CHUNK_SIZE = 1000 * 1024 * 1024;
+const HARD_MAX_PARTS = 10000;
 const PART_RETRIES = 3;
 const PART_UPLOAD_TIMEOUT_MS = 60 * 60 * 1000;
 const STREAM_READ_SIZE = 64 * 1024;
@@ -25,6 +28,27 @@ function describeError(error: unknown): string {
     if (cause) return `${error.message}: ${String(cause)}`;
 
     return error.message;
+}
+
+type ChunkOptions = {
+    chunkSizeMB?: number;
+    maxChunks?: number;
+};
+
+function resolveChunkSize(fileSize: number, options?: ChunkOptions): number {
+    const requestedBytes = options?.chunkSizeMB ? options.chunkSizeMB * 1024 * 1024 : DEFAULT_CHUNK_SIZE;
+    const maxChunks = Math.min(HARD_MAX_PARTS, Math.max(1, options?.maxChunks ?? HARD_MAX_PARTS));
+
+    let chunkSize = Math.min(MAX_CHUNK_SIZE, Math.max(MIN_CHUNK_SIZE, Math.round(requestedBytes)));
+
+    // If the requested chunk size would split the file into more parts than
+    // allowed, grow the chunk size so the part count stays within the cap.
+    const minChunkSizeForCap = Math.ceil(fileSize / maxChunks);
+    if (minChunkSizeForCap > chunkSize) {
+        chunkSize = Math.min(MAX_CHUNK_SIZE, minChunkSizeForCap);
+    }
+
+    return chunkSize;
 }
 
 type NativeUploadProgress = {
@@ -549,10 +573,12 @@ async function uploadMultipart(
     fileBuffer: ArrayBuffer,
     filename: string,
     mimeType: string,
-    destinationFolder: string
+    destinationFolder: string,
+    chunkOptions?: ChunkOptions
 ): Promise<string> {
     const remotePath = `${destinationFolder}/`;
     const size = fileBuffer.byteLength;
+    const chunkSize = resolveChunkSize(size, chunkOptions);
     const initResponse = await fetchWithTimeout(`${MOCHA_BASE}/api/files/multipart/init`, {
         method: "POST",
         headers: authHeaders(apiKey, {
@@ -563,7 +589,7 @@ async function uploadMultipart(
             path: remotePath,
             size,
             mimeType,
-            partSizeBytes: CHUNK_SIZE,
+            partSizeBytes: chunkSize,
             strategy: "s3"
         })
     }, 30 * 1000);
@@ -591,7 +617,7 @@ async function uploadMultipart(
         throw new Error(`Invalid multipart init response: ${JSON.stringify(initData)}`);
     }
 
-    const totalParts = Math.ceil(size / CHUNK_SIZE);
+    const totalParts = Math.ceil(size / chunkSize);
     const parts: Array<{ partNumber: number; etag: string; }> = [];
     let completedBytes = 0;
 
@@ -599,8 +625,8 @@ async function uploadMultipart(
         for (let partNumber = 1; partNumber <= totalParts; partNumber++) {
             getUploadSession(uploadKey);
 
-            const offset = (partNumber - 1) * CHUNK_SIZE;
-            const chunk = fileBuffer.slice(offset, Math.min(size, offset + CHUNK_SIZE));
+            const offset = (partNumber - 1) * chunkSize;
+            const chunk = fileBuffer.slice(offset, Math.min(size, offset + chunkSize));
             const etag = await uploadPart(uploadKey, apiKey, session, chunk, partNumber, totalParts, completedBytes, size);
 
             completedBytes += chunk.byteLength;
@@ -657,9 +683,11 @@ async function uploadMultipartFromPath(
     size: number,
     filename: string,
     mimeType: string,
-    destinationFolder: string
+    destinationFolder: string,
+    chunkOptions?: ChunkOptions
 ): Promise<string> {
     const remotePath = `${destinationFolder}/`;
+    const chunkSize = resolveChunkSize(size, chunkOptions);
     const initResponse = await fetchWithTimeout(`${MOCHA_BASE}/api/files/multipart/init`, {
         method: "POST",
         headers: authHeaders(apiKey, {
@@ -670,7 +698,7 @@ async function uploadMultipartFromPath(
             path: remotePath,
             size,
             mimeType,
-            partSizeBytes: CHUNK_SIZE,
+            partSizeBytes: chunkSize,
             strategy: "s3"
         })
     }, 30 * 1000);
@@ -698,7 +726,7 @@ async function uploadMultipartFromPath(
         throw new Error(`Invalid multipart init response: ${JSON.stringify(initData)}`);
     }
 
-    const totalParts = Math.ceil(size / CHUNK_SIZE);
+    const totalParts = Math.ceil(size / chunkSize);
     const parts: Array<{ partNumber: number; etag: string; }> = [];
     let completedBytes = 0;
     const handle = await open(filePath, "r");
@@ -707,8 +735,8 @@ async function uploadMultipartFromPath(
         for (let partNumber = 1; partNumber <= totalParts; partNumber++) {
             getUploadSession(uploadKey);
 
-            const offset = (partNumber - 1) * CHUNK_SIZE;
-            const readSize = Math.min(CHUNK_SIZE, size - offset);
+            const offset = (partNumber - 1) * chunkSize;
+            const readSize = Math.min(chunkSize, size - offset);
             const buffer = Buffer.allocUnsafe(readSize);
             const { bytesRead } = await handle.read(buffer, 0, readSize, offset);
             const chunk = toArrayBuffer(buffer.subarray(0, bytesRead));
@@ -799,7 +827,8 @@ export async function fetchUrlAndUpload(
     filename: string,
     apiKey: string,
     shareExpiry: string,
-    uploadKey: string
+    uploadKey: string,
+    chunkOptions?: ChunkOptions
 ): Promise<NativeUploadResult> {
     activeUploads.set(uploadKey, {
         cancelled: false,
@@ -860,7 +889,7 @@ export async function fetchUrlAndUpload(
 
         await ensureFolder(apiKey, destinationFolder);
 
-        const fileId = await uploadMultipart(uploadKey, apiKey, fileBuffer, filename, resolvedMimeType, destinationFolder);
+        const fileId = await uploadMultipart(uploadKey, apiKey, fileBuffer, filename, resolvedMimeType, destinationFolder, chunkOptions);
 
         setProgress(uploadKey, {
             phase: "sharing",
@@ -896,7 +925,8 @@ export async function uploadToMocha(
     mimeType: string,
     apiKey: string,
     shareExpiry: string,
-    uploadKey: string
+    uploadKey: string,
+    chunkOptions?: ChunkOptions
 ): Promise<NativeUploadResult> {
     activeUploads.set(uploadKey, {
         cancelled: false,
@@ -942,7 +972,7 @@ export async function uploadToMocha(
 
         await ensureFolder(apiKey, destinationFolder);
 
-        const fileId = await uploadMultipart(uploadKey, apiKey, fileBuffer, filename, resolvedMimeType, destinationFolder);
+        const fileId = await uploadMultipart(uploadKey, apiKey, fileBuffer, filename, resolvedMimeType, destinationFolder, chunkOptions);
 
         setProgress(uploadKey, {
             phase: "sharing",
@@ -978,7 +1008,8 @@ export async function uploadPathToMocha(
     mimeType: string,
     apiKey: string,
     shareExpiry: string,
-    uploadKey: string
+    uploadKey: string,
+    chunkOptions?: ChunkOptions
 ): Promise<NativeUploadResult> {
     const fileStat = await stat(filePath);
     activeUploads.set(uploadKey, {
@@ -1025,7 +1056,7 @@ export async function uploadPathToMocha(
 
         await ensureFolder(apiKey, destinationFolder);
 
-        const fileId = await uploadMultipartFromPath(uploadKey, apiKey, filePath, fileStat.size, filename, resolvedMimeType, destinationFolder);
+        const fileId = await uploadMultipartFromPath(uploadKey, apiKey, filePath, fileStat.size, filename, resolvedMimeType, destinationFolder, chunkOptions);
 
         setProgress(uploadKey, {
             phase: "sharing",
