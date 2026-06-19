@@ -14,7 +14,7 @@ Okay this is a different type of install.
 1. Clone the Equicord repo `git clone https://github.com/Equicord/Equicord`
 
 	You **HAVE TO CLONE THIS REPO**, it cannot build without the .git
-2. In a seperate folder clone EquiMocha `git clone https://github.com/nxllxvxxd2/EquiMocha` 
+2. In a separate folder clone EquiMocha `git clone https://github.com/nxllvxxd/EquiMocha` 
 
 	You can also download the zip and extract it, but I recommend using git for easier updates
 3. Move the contents of the EquiMocha folder (just cut/copy and paste the folder itself) into ./Equicord/src/plugins
