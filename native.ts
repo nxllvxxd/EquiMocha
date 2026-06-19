@@ -14,6 +14,19 @@ type NativeUploadResult = {
     error?: string;
 };
 
+function describeError(error: unknown): string {
+    if (!(error instanceof Error)) return "Unknown error";
+
+    const cause = (error as { cause?: unknown }).cause;
+    if (cause instanceof Error) {
+        const code = (cause as { code?: string }).code;
+        return code ? `${error.message}: ${code} (${cause.message})` : `${error.message}: ${cause.message}`;
+    }
+    if (cause) return `${error.message}: ${String(cause)}`;
+
+    return error.message;
+}
+
 type NativeUploadProgress = {
     phase: "preparing" | "uploading" | "retrying" | "sharing" | "success" | "failed" | "cancelled";
     percent: number;
@@ -864,12 +877,12 @@ export async function fetchUrlAndUpload(
     } catch (error) {
         setProgress(uploadKey, {
             phase: activeUploads.get(uploadKey)?.cancelled ? "cancelled" : "failed",
-            status: error instanceof Error ? error.message : "Unknown error"
+            status: describeError(error)
         });
 
         return {
             success: false,
-            error: error instanceof Error ? error.message : "Unknown error"
+            error: describeError(error)
         };
     } finally {
         setTimeout(() => activeUploads.delete(uploadKey), 10 * 1000);
@@ -946,12 +959,12 @@ export async function uploadToMocha(
     } catch (error) {
         setProgress(uploadKey, {
             phase: activeUploads.get(uploadKey)?.cancelled ? "cancelled" : "failed",
-            status: error instanceof Error ? error.message : "Unknown error"
+            status: describeError(error)
         });
 
         return {
             success: false,
-            error: error instanceof Error ? error.message : "Unknown error"
+            error: describeError(error)
         };
     } finally {
         setTimeout(() => activeUploads.delete(uploadKey), 10 * 1000);
@@ -1029,12 +1042,12 @@ export async function uploadPathToMocha(
     } catch (error) {
         setProgress(uploadKey, {
             phase: activeUploads.get(uploadKey)?.cancelled ? "cancelled" : "failed",
-            status: error instanceof Error ? error.message : "Unknown error"
+            status: describeError(error)
         });
 
         return {
             success: false,
-            error: error instanceof Error ? error.message : "Unknown error"
+            error: describeError(error)
         };
     } finally {
         setTimeout(() => activeUploads.delete(uploadKey), 10 * 1000);
