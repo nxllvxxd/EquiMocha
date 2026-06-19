@@ -1,8 +1,8 @@
 import { dialog, IpcMainInvokeEvent } from "electron";
-import { open, readFile, stat } from "fs/promises";
+import { open, stat } from "fs/promises";
 
-const MOCHA_BASE = "https://mocha.my";
-const DIRECT_UPLOAD_LIMIT = 50 * 1024 * 1024;
+const MOCHA_BASE = "https://api.mocha.my";
+const MOCHA_WEB = "https://mocha.my";
 const CHUNK_SIZE = 10 * 1024 * 1024;
 const PART_RETRIES = 3;
 const PART_UPLOAD_TIMEOUT_MS = 60 * 60 * 1000;
@@ -371,7 +371,7 @@ async function findExistingShare(apiKey: string, filename: string, size: number,
         if (!token) continue;
 
         if (shareMatchesFile(share, filename, size, mimeType)) {
-            return { token, url: `${MOCHA_BASE}/share/${token}` };
+            return { token, url: `${MOCHA_WEB}/share/${token}` };
         }
 
         const metadataResponse = await fetchWithTimeout(`${MOCHA_BASE}/api/shares/${encodeURIComponent(token)}`, {
@@ -384,7 +384,7 @@ async function findExistingShare(apiKey: string, filename: string, size: number,
         const publicShare = metadata?.share ?? metadata;
 
         if (isShareActive(publicShare) && shareMatchesFile(publicShare, filename, size, mimeType)) {
-            return { token, url: `${MOCHA_BASE}/share/${token}` };
+            return { token, url: `${MOCHA_WEB}/share/${token}` };
         }
     }
 
@@ -413,47 +413,6 @@ async function findExistingMochaShareOrCreate(apiKey: string, filename: string, 
     if (!existingFile) return null;
 
     return getExistingShareOrCreateForFile(apiKey, existingFile, filename, size, mimeType, shareExpiry);
-}
-
-async function uploadDirect(
-    uploadKey: string,
-    apiKey: string,
-    fileBuffer: ArrayBuffer,
-    filename: string,
-    mimeType: string,
-    destinationFolder: string
-): Promise<string> {
-    const uploadSession = getUploadSession(uploadKey);
-    const response = await fetchWithTimeout(`${MOCHA_BASE}/api/files`, {
-        method: "POST",
-        signal: uploadSession.controller.signal,
-        headers: authHeaders(apiKey, {
-            "x-file-name": filename,
-            "x-file-path": `${destinationFolder}/`,
-            "x-file-type": mimeType,
-            "Content-Length": String(fileBuffer.byteLength)
-        }),
-        duplex: "half",
-        body: progressBody(fileBuffer, loaded => {
-            setProgress(uploadKey, {
-                phase: "uploading",
-                percent: Math.min(99, Math.round(loaded / fileBuffer.byteLength * 100)),
-                transferredBytes: loaded,
-                totalBytes: fileBuffer.byteLength,
-                partNumber: 1,
-                totalParts: 1,
-                status: "Uploading via Mocha..."
-            });
-        })
-    } as RequestInit & { duplex: "half"; });
-
-    getUploadSession(uploadKey);
-
-    if (!response.ok) {
-        throw new Error(`Direct upload failed: ${response.status} ${await response.text()}`);
-    }
-
-    return getFileId(await response.json());
 }
 
 async function getPresignedPartUrl(apiKey: string, session: any, partNumber: number): Promise<string> {
@@ -818,7 +777,7 @@ async function createShare(apiKey: string, fileId: string, shareExpiry: string):
         throw new Error("No share token returned from Mocha");
     }
 
-    return `${MOCHA_BASE}/share/${token}`;
+    return `${MOCHA_WEB}/share/${token}`;
 }
 
 export async function uploadToMocha(
@@ -874,9 +833,7 @@ export async function uploadToMocha(
 
         await ensureFolder(apiKey, destinationFolder);
 
-        const fileId = fileBuffer.byteLength <= DIRECT_UPLOAD_LIMIT
-            ? await uploadDirect(uploadKey, apiKey, fileBuffer, filename, resolvedMimeType, destinationFolder)
-            : await uploadMultipart(uploadKey, apiKey, fileBuffer, filename, resolvedMimeType, destinationFolder);
+        const fileId = await uploadMultipart(uploadKey, apiKey, fileBuffer, filename, resolvedMimeType, destinationFolder);
 
         setProgress(uploadKey, {
             phase: "sharing",
@@ -959,9 +916,7 @@ export async function uploadPathToMocha(
 
         await ensureFolder(apiKey, destinationFolder);
 
-        const fileId = fileStat.size <= DIRECT_UPLOAD_LIMIT
-            ? await uploadDirect(uploadKey, apiKey, toArrayBuffer(await readFile(filePath)), filename, resolvedMimeType, destinationFolder)
-            : await uploadMultipartFromPath(uploadKey, apiKey, filePath, fileStat.size, filename, resolvedMimeType, destinationFolder);
+        const fileId = await uploadMultipartFromPath(uploadKey, apiKey, filePath, fileStat.size, filename, resolvedMimeType, destinationFolder);
 
         setProgress(uploadKey, {
             phase: "sharing",

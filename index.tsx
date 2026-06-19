@@ -21,10 +21,10 @@ const Native = IS_DISCORD_DESKTOP
     ? VencordNative.pluginHelpers.EquiMocha as PluginNative<typeof import("./native")>
     : null;
 
-const MOCHA_BASE = "https://mocha.my";
+const MOCHA_BASE = "https://api.mocha.my";
+const MOCHA_WEB = "https://mocha.my";
 const MOCHA_SERVICE_LABEL = "Mocha";
 const MOCHA_INTERCEPT_THRESHOLD = 9 * 1024 * 1024;
-const DIRECT_UPLOAD_LIMIT = 50 * 1024 * 1024;
 const CHUNK_SIZE = 10 * 1024 * 1024;
 const PART_RETRIES = 3;
 
@@ -223,7 +223,7 @@ function shouldInterceptUploadFiles(files: readonly File[], payload: UploadAddFi
     return files.some(file => file.size > discordLimit);
 }
 
-function isArrayLikeFileContainer(value: unknown): value is { length: number; [index: number]: unknown; } {
+function isArrayLikeFileContainer(value: unknown): value is { length: number;[index: number]: unknown; } {
     return Boolean(
         value
         && typeof value === "object"
@@ -586,32 +586,6 @@ function getFileId(data: any): string {
     return String(fileId);
 }
 
-async function uploadDirect(fileBlob: Blob, filename: string, destinationFolder: string): Promise<string> {
-    const startTime = Date.now();
-    const xhr = await uploadRequest(`${MOCHA_BASE}/api/files`, {
-        method: "POST",
-        headers: authHeaders({
-            "x-file-name": filename,
-            "x-file-path": `${destinationFolder}/`,
-            "x-file-type": fileBlob.type || "application/octet-stream"
-        }),
-        body: fileBlob
-    }, event => {
-        if (!event.lengthComputable || event.total <= 0) return;
-
-        const elapsed = Math.max((Date.now() - startTime) / 1000, 0.001);
-        setUploadState({
-            phase: "uploading",
-            percent: Math.round(Math.max(0, Math.min(99, event.loaded / event.total * 100))),
-            transferredBytes: event.loaded,
-            totalBytes: event.total,
-            status: `Uploading via ${MOCHA_SERVICE_LABEL}...`
-        });
-    });
-
-    return getFileId(JSON.parse(xhr.responseText));
-}
-
 async function uploadMultipart(fileBlob: Blob, filename: string, destinationFolder: string): Promise<string> {
     const mimeType = fileBlob.type || "application/octet-stream";
     const remotePath = `${destinationFolder}/`;
@@ -694,10 +668,10 @@ async function uploadMultipart(fileBlob: Blob, filename: string, destinationFold
                 const presignData = await presignResponse.json();
                 const presignedUrl: string | undefined =
                     typeof presignData?.url === "string" ? presignData.url
-                    : typeof presignData?.presignedUrl === "string" ? presignData.presignedUrl
-                    : Array.isArray(presignData?.urls)
-                        ? presignData.urls.find((e: any) => e?.partNumber === partNumber)?.url
-                        : undefined;
+                        : typeof presignData?.presignedUrl === "string" ? presignData.presignedUrl
+                            : Array.isArray(presignData?.urls)
+                                ? presignData.urls.find((e: any) => e?.partNumber === partNumber)?.url
+                                : undefined;
 
                 if (!presignedUrl) {
                     throw new Error(`No presigned URL returned for part ${partNumber}`);
@@ -788,7 +762,7 @@ async function createShare(fileId: string): Promise<string> {
         throw new Error("No share token returned from Mocha");
     }
 
-    return `${MOCHA_BASE}/share/${token}`;
+    return `${MOCHA_WEB}/share/${token}`;
 }
 
 function getFilenameFromBlob(fileBlob: Blob, sourceUrl?: string): string {
@@ -939,9 +913,7 @@ async function uploadToMochaRenderer(fileBlob: Blob, filename: string): Promise<
 
     await ensureFolder(destinationFolder);
 
-    const fileId = fileBlob.size <= DIRECT_UPLOAD_LIMIT
-        ? await uploadDirect(fileBlob, filename, destinationFolder)
-        : await uploadMultipart(fileBlob, filename, destinationFolder);
+    const fileId = await uploadMultipart(fileBlob, filename, destinationFolder);
 
     setUploadState({
         status: "Creating Mocha share link...",
