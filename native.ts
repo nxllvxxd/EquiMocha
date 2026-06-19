@@ -780,6 +780,102 @@ async function createShare(apiKey: string, fileId: string, shareExpiry: string):
     return `${MOCHA_WEB}/share/${token}`;
 }
 
+export async function fetchUrlAndUpload(
+    _: IpcMainInvokeEvent,
+    sourceUrl: string,
+    filename: string,
+    apiKey: string,
+    shareExpiry: string,
+    uploadKey: string
+): Promise<NativeUploadResult> {
+    activeUploads.set(uploadKey, {
+        cancelled: false,
+        controller: new AbortController(),
+        progress: {
+            phase: "preparing",
+            percent: 1,
+            transferredBytes: 0,
+            totalBytes: 0,
+            partNumber: 0,
+            totalParts: 0,
+            status: "Fetching file..."
+        }
+    });
+
+    try {
+        const uploadSession = getUploadSession(uploadKey);
+        const fetchResponse = await fetchWithTimeout(sourceUrl, {
+            method: "GET",
+            signal: uploadSession.controller.signal
+        }, 5 * 60 * 1000);
+
+        if (!fetchResponse.ok) {
+            throw new Error(`Failed to fetch file: ${fetchResponse.status}`);
+        }
+
+        const contentType = fetchResponse.headers.get("content-type") || "application/octet-stream";
+        const mimeType = contentType.split(";")[0].trim() || "application/octet-stream";
+        const fileBuffer = await fetchResponse.arrayBuffer();
+
+        getUploadSession(uploadKey);
+
+        activeUploads.get(uploadKey)!.progress.totalBytes = fileBuffer.byteLength;
+
+        const destinationFolder = `/discord/${today()}`;
+        const resolvedMimeType = mimeType || "application/octet-stream";
+
+        setProgress(uploadKey, {
+            phase: "preparing",
+            percent: 1,
+            transferredBytes: 0,
+            totalBytes: fileBuffer.byteLength,
+            status: "Checking Mocha for an existing share..."
+        });
+
+        const existingShare = await findExistingMochaShareOrCreate(apiKey, filename, fileBuffer.byteLength, resolvedMimeType, shareExpiry).catch(() => null);
+        if (existingShare) {
+            setProgress(uploadKey, {
+                phase: "success",
+                percent: 100,
+                transferredBytes: fileBuffer.byteLength,
+                totalBytes: fileBuffer.byteLength,
+                status: "Existing Mocha share found."
+            });
+
+            return { success: true, url: existingShare.url };
+        }
+
+        await ensureFolder(apiKey, destinationFolder);
+
+        const fileId = await uploadMultipart(uploadKey, apiKey, fileBuffer, filename, resolvedMimeType, destinationFolder);
+
+        setProgress(uploadKey, {
+            phase: "sharing",
+            percent: 99,
+            transferredBytes: fileBuffer.byteLength,
+            totalBytes: fileBuffer.byteLength,
+            status: "Creating Mocha share link..."
+        });
+
+        return {
+            success: true,
+            url: await createShare(apiKey, fileId, shareExpiry)
+        };
+    } catch (error) {
+        setProgress(uploadKey, {
+            phase: activeUploads.get(uploadKey)?.cancelled ? "cancelled" : "failed",
+            status: error instanceof Error ? error.message : "Unknown error"
+        });
+
+        return {
+            success: false,
+            error: error instanceof Error ? error.message : "Unknown error"
+        };
+    } finally {
+        setTimeout(() => activeUploads.delete(uploadKey), 10 * 1000);
+    }
+}
+
 export async function uploadToMocha(
     _: IpcMainInvokeEvent,
     fileBuffer: ArrayBuffer,

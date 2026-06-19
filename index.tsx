@@ -21,12 +21,8 @@ const Native = IS_DISCORD_DESKTOP
     ? VencordNative.pluginHelpers.EquiMocha as PluginNative<typeof import("./native")>
     : null;
 
-const MOCHA_BASE = "https://api.mocha.my";
-const MOCHA_WEB = "https://mocha.my";
 const MOCHA_SERVICE_LABEL = "Mocha";
 const MOCHA_INTERCEPT_THRESHOLD = 9 * 1024 * 1024;
-const CHUNK_SIZE = 10 * 1024 * 1024;
-const PART_RETRIES = 3;
 
 let uploadAddFilesInterceptor: ((event: unknown) => void) | null = null;
 let pasteEventListener: ((event: ClipboardEvent) => void) | null = null;
@@ -136,7 +132,6 @@ let isUploading = false;
 let cancelRequested = false;
 let uploadState: UploadProgressState = { ...defaultUploadState };
 let activeAbortController: AbortController | null = null;
-let activeXhr: XMLHttpRequest | null = null;
 let activeNativeUploadKey: string | null = null;
 const uploadStateListeners = new Set<() => void>();
 
@@ -176,7 +171,6 @@ function cancelCurrentUpload() {
 
     cancelRequested = true;
     activeAbortController?.abort();
-    activeXhr?.abort();
     if (activeNativeUploadKey && Native) {
         void Native.cancelUpload(activeNativeUploadKey);
     }
@@ -386,27 +380,6 @@ function formatBytes(bytes: number): string {
     return `${value.toFixed(value >= 10 || unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
 }
 
-function today(): string {
-    return new Date().toISOString().split("T")[0];
-}
-
-function expiryHours(value: string): number | null {
-    const map: Record<string, number> = {
-        "1d": 24,
-        "7d": 168,
-        "30d": 720
-    };
-
-    return map[value] ?? null;
-}
-
-function authHeaders(extra: Record<string, string> = {}) {
-    return {
-        Authorization: `Bearer ${settings.store.apiKey.trim()}`,
-        ...extra
-    };
-}
-
 function debugLog(...args: unknown[]) {
     if (!settings.store.debug) return;
 
@@ -433,336 +406,6 @@ function isUploadCancelledError(error: unknown): boolean {
 
     const message = error.message.toLowerCase();
     return message.includes("cancelled") || message.includes("canceled") || message.includes("aborted") || message.includes("aborterror");
-}
-
-async function fetchWithAbort(url: string, options: RequestInit): Promise<Response> {
-    const controller = new AbortController();
-    activeAbortController = controller;
-    const method = options.method || "GET";
-
-    debugLog("fetch start", {
-        method,
-        url,
-        bodyType: options.body ? options.body.constructor?.name : null
-    });
-
-    try {
-        const response = await fetch(url, {
-            ...options,
-            signal: controller.signal
-        });
-
-        await debugResponse(`fetch complete ${method} ${url}`, response);
-
-        return response;
-    } catch (error) {
-        debugLog("fetch error", {
-            method,
-            url,
-            error
-        });
-
-        if (cancelRequested || controller.signal.aborted) {
-            throw new Error(cancelRequested ? "Upload cancelled by user" : "Upload aborted");
-        }
-
-        throw error;
-    } finally {
-        if (activeAbortController === controller) {
-            activeAbortController = null;
-        }
-    }
-}
-
-function getHeaderEntries(headers?: HeadersInit): [string, string][] {
-    if (!headers) return [];
-    if (headers instanceof Headers) return Array.from(headers.entries());
-    if (Array.isArray(headers)) return headers.map(([key, value]) => [key, value]);
-
-    return Object.entries(headers);
-}
-
-function uploadRequest(url: string, options: RequestInit, onProgress?: (event: ProgressEvent) => void): Promise<XMLHttpRequest> {
-    return new Promise((resolve, reject) => {
-        const xhr = new XMLHttpRequest();
-        activeXhr = xhr;
-        const method = options.method || "GET";
-
-        debugLog("xhr start", {
-            method,
-            url,
-            bodyType: options.body ? options.body.constructor?.name : null
-        });
-
-        xhr.open(method, url);
-
-        for (const [key, value] of getHeaderEntries(options.headers)) {
-            xhr.setRequestHeader(key, value);
-        }
-
-        xhr.upload.onprogress = event => onProgress?.(event);
-        xhr.onload = () => {
-            debugLog("xhr complete", {
-                method,
-                url,
-                status: xhr.status,
-                statusText: xhr.statusText,
-                response: xhr.responseText
-            });
-
-            if (xhr.status >= 200 && xhr.status < 300) {
-                resolve(xhr);
-            } else {
-                reject(new Error(`Upload failed: ${xhr.status} ${xhr.responseText}`));
-            }
-        };
-        xhr.onerror = () => {
-            debugLog("xhr error", {
-                method,
-                url,
-                status: xhr.status,
-                statusText: xhr.statusText,
-                response: xhr.responseText
-            });
-
-            reject(new Error("Upload failed"));
-        };
-        xhr.onabort = () => {
-            debugLog("xhr abort", {
-                method,
-                url,
-                status: xhr.status,
-                statusText: xhr.statusText,
-                response: xhr.responseText
-            });
-
-            reject(new Error(cancelRequested ? "Upload cancelled by user" : "Upload aborted"));
-        };
-        xhr.onloadend = () => {
-            xhr.upload.onprogress = null;
-            if (activeXhr === xhr) {
-                activeXhr = null;
-            }
-        };
-
-        const { body } = options;
-        xhr.send(body instanceof ReadableStream ? null : body as XMLHttpRequestBodyInit | null);
-    });
-}
-
-async function ensureFolder(path: string) {
-    const parts = path.replace(/^\/+|\/+$/g, "").split("/").filter(Boolean);
-
-    for (let i = 0; i < parts.length; i++) {
-        if (cancelRequested) throw new Error("Upload cancelled by user");
-
-        const parent = `/${parts.slice(0, i).join("/")}`.replace(/\/$/, "") || "/";
-        const name = parts[i];
-
-        const response = await fetchWithAbort(`${MOCHA_BASE}/api/files/folders`, {
-            method: "POST",
-            headers: authHeaders({
-                "Content-Type": "application/json"
-            }),
-            body: JSON.stringify({
-                path: parent,
-                name
-            })
-        });
-
-        if (!response.ok && response.status !== 409) {
-            throw new Error(`Failed creating Mocha folder: ${response.status} ${await response.text()}`);
-        }
-    }
-}
-
-function getFileId(data: any): string {
-    const fileId = data?.fileId ?? data?.id ?? data?.file?.id;
-
-    if (!fileId) {
-        throw new Error("No file id returned from Mocha");
-    }
-
-    return String(fileId);
-}
-
-async function uploadMultipart(fileBlob: Blob, filename: string, destinationFolder: string): Promise<string> {
-    const mimeType = fileBlob.type || "application/octet-stream";
-    const remotePath = `${destinationFolder}/`;
-    const initResponse = await fetchWithAbort(`${MOCHA_BASE}/api/files/multipart/init`, {
-        method: "POST",
-        headers: authHeaders({
-            "Content-Type": "application/json"
-        }),
-        body: JSON.stringify({
-            originalName: filename,
-            path: remotePath,
-            size: fileBlob.size,
-            mimeType,
-            strategy: "s3",
-            partSizeBytes: CHUNK_SIZE
-        })
-    });
-
-    if (!initResponse.ok) {
-        throw new Error(`Multipart init failed: ${initResponse.status} ${await initResponse.text()}`);
-    }
-
-    const initData = await initResponse.json();
-
-    if (initData.strategy !== "s3") {
-        throw new Error(`Expected S3 multipart strategy but server returned: ${initData.strategy}`);
-    }
-
-    const session = {
-        strategy: "s3" as const,
-        uploadId: String(initData.uploadId),
-        key: String(initData.key),
-        nodeId: String(initData.nodeId),
-        originalName: filename,
-        path: remotePath
-    };
-
-    if (!session.uploadId || !session.key || !session.nodeId) {
-        throw new Error(`Invalid multipart init response: ${JSON.stringify(initData)}`);
-    }
-
-    const totalParts = Math.ceil(fileBlob.size / CHUNK_SIZE);
-    const parts: Array<{ partNumber: number; etag: string; }> = [];
-    let totalUploaded = 0;
-
-    for (let partNumber = 1; partNumber <= totalParts; partNumber++) {
-        if (cancelRequested) throw new Error("Upload cancelled by user");
-
-        const offset = (partNumber - 1) * CHUNK_SIZE;
-        const chunk = fileBlob.slice(offset, Math.min(fileBlob.size, offset + CHUNK_SIZE));
-
-        for (let attempt = 1; attempt <= PART_RETRIES; attempt++) {
-            try {
-                setUploadState({
-                    phase: attempt === 1 ? "uploading" : "retrying",
-                    attempt: partNumber,
-                    totalAttempts: totalParts,
-                    status: attempt === 1
-                        ? `Uploading via ${MOCHA_SERVICE_LABEL}...`
-                        : `Retrying part ${partNumber}/${totalParts} via ${MOCHA_SERVICE_LABEL}...`
-                });
-
-                // Fetch presigned S3 URL for this part
-                const presignResponse = await fetchWithAbort(`${MOCHA_BASE}/api/files/multipart/presigned`, {
-                    method: "POST",
-                    headers: authHeaders({
-                        "Content-Type": "application/json"
-                    }),
-                    body: JSON.stringify({
-                        ...session,
-                        partNumbers: [partNumber],
-                        expiresInSeconds: 3600
-                    })
-                });
-
-                if (!presignResponse.ok) {
-                    throw new Error(`Presign part ${partNumber} failed: ${presignResponse.status} ${await presignResponse.text()}`);
-                }
-
-                const presignData = await presignResponse.json();
-                const presignedUrl: string | undefined =
-                    typeof presignData?.url === "string" ? presignData.url
-                        : typeof presignData?.presignedUrl === "string" ? presignData.presignedUrl
-                            : Array.isArray(presignData?.urls)
-                                ? presignData.urls.find((e: any) => e?.partNumber === partNumber)?.url
-                                : undefined;
-
-                if (!presignedUrl) {
-                    throw new Error(`No presigned URL returned for part ${partNumber}`);
-                }
-
-                let previousLoaded = 0;
-                const xhr = await uploadRequest(presignedUrl, {
-                    method: "PUT",
-                    headers: {},
-                    body: chunk
-                }, event => {
-                    if (!event.lengthComputable) return;
-
-                    const delta = event.loaded - previousLoaded;
-                    previousLoaded = event.loaded;
-                    totalUploaded += delta;
-
-                    setUploadState({
-                        phase: "uploading",
-                        percent: Math.round(Math.max(0, Math.min(99, totalUploaded / fileBlob.size * 100))),
-                        transferredBytes: totalUploaded,
-                        totalBytes: fileBlob.size,
-                        status: `Uploading via ${MOCHA_SERVICE_LABEL}...`
-                    });
-                });
-
-                const etag = xhr.getResponseHeader("ETag");
-                if (!etag) {
-                    throw new Error(`No ETag returned for part ${partNumber}`);
-                }
-
-                parts.push({ partNumber, etag });
-                break;
-            } catch (error) {
-                if (attempt === PART_RETRIES) {
-                    throw error;
-                }
-
-                await new Promise(resolve => setTimeout(resolve, attempt * 1000));
-            }
-        }
-    }
-
-    const completeResponse = await fetchWithAbort(`${MOCHA_BASE}/api/files/multipart/complete`, {
-        method: "POST",
-        headers: authHeaders({
-            "Content-Type": "application/json"
-        }),
-        body: JSON.stringify({
-            ...session,
-            size: fileBlob.size,
-            mimeType,
-            parts: parts.sort((a, b) => a.partNumber - b.partNumber)
-        })
-    });
-
-    if (!completeResponse.ok) {
-        throw new Error(`Multipart completion failed: ${completeResponse.status} ${await completeResponse.text()}`);
-    }
-
-    return getFileId(await completeResponse.json());
-}
-
-async function createShare(fileId: string): Promise<string> {
-    const payload: Record<string, unknown> = { fileId };
-    const hours = expiryHours(settings.store.shareExpiry);
-
-    if (hours !== null) {
-        payload.expiresInHours = hours;
-    }
-
-    const response = await fetchWithAbort(`${MOCHA_BASE}/api/shares`, {
-        method: "POST",
-        headers: authHeaders({
-            "Content-Type": "application/json"
-        }),
-        body: JSON.stringify(payload)
-    });
-
-    if (!response.ok) {
-        throw new Error(`Failed creating Mocha share: ${response.status} ${await response.text()}`);
-    }
-
-    const data = await response.json();
-    const token = data?.token ?? data?.share?.token;
-
-    if (!token) {
-        throw new Error("No share token returned from Mocha");
-    }
-
-    return `${MOCHA_WEB}/share/${token}`;
 }
 
 function getFilenameFromBlob(fileBlob: Blob, sourceUrl?: string): string {
@@ -908,21 +551,6 @@ async function uploadPathToMocha(filePath: string, filename: string, mimeType = 
     }
 }
 
-async function uploadToMochaRenderer(fileBlob: Blob, filename: string): Promise<string> {
-    const destinationFolder = `/discord/${today()}`;
-
-    await ensureFolder(destinationFolder);
-
-    const fileId = await uploadMultipart(fileBlob, filename, destinationFolder);
-
-    setUploadState({
-        status: "Creating Mocha share link...",
-        percent: 99
-    });
-
-    return createShare(fileId);
-}
-
 async function notifyUploadSuccess(finalUrl: string): Promise<void> {
     showToast("Upload successful", Toasts.Type.SUCCESS);
 
@@ -963,6 +591,11 @@ async function uploadPreparedBlob(fileBlob: Blob, sourceUrl?: string): Promise<v
 }
 
 async function uploadFile(url: string): Promise<void> {
+    if (!Native) {
+        showToast("EquiMocha requires Discord desktop to upload URLs", Toasts.Type.FAILURE);
+        return;
+    }
+
     if (isUploading) {
         showToast("Upload already in progress", Toasts.Type.MESSAGE);
         return;
@@ -973,31 +606,65 @@ async function uploadFile(url: string): Promise<void> {
         return;
     }
 
+    const filename = URL.canParse(url)
+        ? (new URL(url).pathname.split("/").pop() ? decodeURIComponent(new URL(url).pathname.split("/").pop()!) : "upload.bin")
+        : "upload.bin";
+
     isUploading = true;
     cancelRequested = false;
+
+    const uploadKey = createUploadKey();
+    activeNativeUploadKey = uploadKey;
+
     setUploadState({
         phase: "preparing",
-        fileName: "",
+        fileName: filename,
         currentServiceLabel: MOCHA_SERVICE_LABEL,
         attempt: 0,
         totalAttempts: 0,
         percent: 1,
         transferredBytes: 0,
         totalBytes: 0,
-        status: "Preparing upload...",
+        status: "Fetching file...",
         canCancel: true
     });
 
-    try {
-        const response = await fetchWithAbort(url, {
-            method: "GET"
-        });
+    const progressTimer = setInterval(() => {
+        void Native.getUploadProgress(uploadKey)
+            .then(progress => {
+                if (activeNativeUploadKey === uploadKey) {
+                    applyNativeProgress(progress);
+                }
+            })
+            .catch(error => debugLog("native progress poll failed", error));
+    }, 250);
 
-        if (!response.ok) {
-            throw new Error(`Failed to fetch file: ${response.status}`);
+    try {
+        const result = await Native.fetchUrlAndUpload(
+            url,
+            filename,
+            settings.store.apiKey.trim(),
+            settings.store.shareExpiry,
+            uploadKey
+        );
+
+        const finalProgress = await Native.getUploadProgress(uploadKey).catch(() => null);
+        applyNativeProgress(finalProgress);
+
+        debugLog("native url upload result", result);
+
+        if (!result.success || !result.url) {
+            throw new Error(result.error || "Native Mocha upload failed");
         }
 
-        await uploadPreparedBlob(await response.blob(), url);
+        setUploadState({
+            phase: "success",
+            percent: 100,
+            status: `Uploaded successfully via ${MOCHA_SERVICE_LABEL}.`,
+            canCancel: false
+        });
+
+        await notifyUploadSuccess(result.url);
     } catch (error) {
         const message = error instanceof Error ? error.message : "Unknown error";
         if (isUploadCancelledError(error)) {
@@ -1009,9 +676,12 @@ async function uploadFile(url: string): Promise<void> {
             setUploadState({ phase: "failed", status: `Upload failed: ${message}`, canCancel: false, percent: 0 });
         }
     } finally {
+        clearInterval(progressTimer);
+        if (activeNativeUploadKey === uploadKey) {
+            activeNativeUploadKey = null;
+        }
         isUploading = false;
         activeAbortController = null;
-        activeXhr = null;
         setTimeout(() => resetUploadState(), 1800);
     }
 }
@@ -1075,7 +745,6 @@ async function uploadPickedFile(): Promise<void> {
     } finally {
         isUploading = false;
         activeAbortController = null;
-        activeXhr = null;
         setTimeout(() => resetUploadState(), 1800);
     }
 }
@@ -1133,7 +802,6 @@ async function uploadProvidedFiles(files: readonly File[]): Promise<void> {
     } finally {
         isUploading = false;
         activeAbortController = null;
-        activeXhr = null;
         setTimeout(() => resetUploadState(), 1800);
     }
 }
