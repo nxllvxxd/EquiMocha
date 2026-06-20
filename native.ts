@@ -181,27 +181,51 @@ async function fetchWithTimeout(url: string, options: RequestInit, timeoutMs = P
     }
 }
 
+// Folder paths we've already confirmed exist (created this run, or hit a 409
+// for). Avoids re-issuing create-folder requests for every single upload.
+const knownFolders = new Set<string>();
+
+async function createFolderRequest(apiKey: string, parent: string, name: string): Promise<Response> {
+    return fetch(`${MOCHA_BASE}/api/files/folders`, {
+        method: "POST",
+        headers: authHeaders(apiKey, {
+            "Content-Type": "application/json"
+        }),
+        body: JSON.stringify({
+            path: parent,
+            name
+        })
+    });
+}
+
 async function ensureFolder(apiKey: string, path: string) {
     const parts = path.replace(/^\/+|\/+$/g, "").split("/").filter(Boolean);
 
-    for (let i = 0; i < parts.length; i++) {
-        const parent = `/${parts.slice(0, i).join("/")}`.replace(/\/$/, "") || "/";
-        const name = parts[i];
+    let cumulativePath = "";
 
-        const response = await fetch(`${MOCHA_BASE}/api/files/folders`, {
-            method: "POST",
-            headers: authHeaders(apiKey, {
-                "Content-Type": "application/json"
-            }),
-            body: JSON.stringify({
-                path: parent,
-                name
-            })
-        });
+    for (let i = 0; i < parts.length; i++) {
+        const name = parts[i];
+        cumulativePath += `/${name}`;
+
+        if (knownFolders.has(cumulativePath)) continue;
+
+        const parent = `/${parts.slice(0, i).join("/")}`.replace(/\/$/, "") || "/";
+
+        let response = await createFolderRequest(apiKey, parent, name);
+
+        // Some folder APIs treat "/" as a path lookup rather than "this is
+        // root, there's nothing to look up" and 404 instead of creating.
+        // If that's what happened at the root level, retry with an empty
+        // parent before giving up.
+        if (response.status === 404 && parent === "/") {
+            response = await createFolderRequest(apiKey, "", name);
+        }
 
         if (!response.ok && response.status !== 409) {
             throw new Error(`Folder create failed: ${response.status} ${await response.text()}`);
         }
+
+        knownFolders.add(cumulativePath);
     }
 }
 
