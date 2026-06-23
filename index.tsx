@@ -92,9 +92,9 @@ const settings = definePluginSettings({
         description: "Bypass Discord upload and upload attachments to Mocha",
         default: true
     },
-    bypassDiscordUploadOnlyOverLimit: {
+    bypassOverNineMegabytes: {
         type: OptionType.BOOLEAN,
-        description: "Only bypass Discord upload when a file is over Discord's upload limit",
+        description: "Bypass Only Over 9MB",
         default: true
     },
     shareExpiry: {
@@ -220,7 +220,7 @@ function getDiscordUploadLimit(payload?: UploadAddFilesEvent): number {
 }
 
 function shouldInterceptUploadFiles(files: readonly File[], payload: UploadAddFilesEvent): boolean {
-    if (!settings.store.bypassDiscordUploadOnlyOverLimit) return true;
+    if (!settings.store.bypassOverNineMegabytes) return true;
 
     const discordLimit = Math.min(getDiscordUploadLimit(payload), MOCHA_INTERCEPT_THRESHOLD);
 
@@ -571,13 +571,34 @@ async function uploadPathToMocha(filePath: string, filename: string, mimeType = 
     }
 }
 
-async function notifyUploadSuccess(finalUrl: string): Promise<void> {
+async function copyUrlToClipboard(url: string): Promise<void> {
+    try {
+        await navigator.clipboard.writeText(url);
+    } catch {
+        // Fallback for environments where the Clipboard API is unavailable
+        const el = document.createElement("textarea");
+        el.value = url;
+        el.style.position = "fixed";
+        el.style.opacity = "0";
+        document.body.appendChild(el);
+        el.select();
+        document.execCommand("copy");
+        document.body.removeChild(el);
+    }
+}
+
+async function notifyUploadSuccess(finalUrl: string, copyOnly = false): Promise<void> {
     showToast("Upload successful", Toasts.Type.SUCCESS);
 
-    if (settings.store.autoSend) {
+    if (!copyOnly && settings.store.autoSend) {
         sendMessage(SelectedChannelStore.getChannelId(), {
             content: finalUrl
         });
+    } else {
+        // Either autoSend is off, or this upload came from the context menu —
+        // copy the link to the clipboard so it's immediately usable.
+        await copyUrlToClipboard(finalUrl);
+        showToast("Link copied to clipboard", Toasts.Type.SUCCESS);
     }
 }
 
@@ -685,7 +706,8 @@ async function uploadFile(url: string): Promise<void> {
             canCancel: false
         });
 
-        await notifyUploadSuccess(result.url);
+        // Context-menu uploads always copy to clipboard — never auto-send.
+        await notifyUploadSuccess(result.url, true);
     } catch (error) {
         const message = error instanceof Error ? error.message : "Unknown error";
         if (isUploadCancelledError(error)) {
