@@ -877,41 +877,41 @@ const ProgressBarInner = () => {
 
     return (
         <div
-            className={cl("progress-wrap")}
-            data-phase={state.phase}
+            className= { cl("progress-wrap") }
         >
-            <div className={cl("progress-head")}>
-                <div className={cl("progress-label")}>
-                    {state.status || "Uploading..."}
+        <div className={ cl("progress-head") }>
+            <div className={ cl("progress-label") }>
+            { state.status || "Uploading..." }
                 </div>
-                <div className={cl("progress-meta")}>
-                    <span className={cl("progress-percent")}>
-                        {progressLabel}
-                    </span>
-                    <span className={cl("progress-attempt")}>
-                        {state.attempt > 0 && state.totalAttempts > 0 ? `${state.attempt}/${state.totalAttempts}` : ""}
-                    </span>
-                    {state.canCancel && (
-                        <button
-                            className={cl("progress-cancel")}
-                            type="button"
-                            onClick={cancelCurrentUpload}
-                        >
-                            Cancel
-                        </button>
+                < div className = { cl("progress-meta") } >
+                    <span className={ cl("progress-percent") }>
+                    { progressLabel }
+                        </span>
+                        < span className = { cl("progress-attempt") } >
+                        { state.attempt > 0 && state.totalAttempts > 0 ? `${state.attempt}/${state.totalAttempts}` : "" }
+                            </span>
+    {
+        state.canCancel && (
+            <button
+                            className={ cl("progress-cancel") }
+        type = "button"
+        onClick = { cancelCurrentUpload }
+            >
+            ✕
+</button>
                     )}
-                </div>
-            </div>
-            <div className={cl("progress-track")}>
-                <div
-                    className={cl("progress-fill")}
-                    style={{ width: `${percentage}%` }}
+</div>
+    </div>
+    < div className = { cl("progress-track") } >
+        <div
+                    className={ cl("progress-fill") }
+style = {{ width: `${percentage}%` }}
                 />
-            </div>
-            <div className={cl("progress-file")}>
-                {state.fileName || ""}{state.currentServiceLabel ? ` • ${state.currentServiceLabel}` : ""}
-            </div>
-        </div>
+    </div>
+    < div className = { cl("progress-file") } >
+    { state.fileName || "" }{ state.currentServiceLabel ? ` • ${state.currentServiceLabel}` : "" }
+</div>
+    </div>
     );
 };
 
@@ -932,9 +932,9 @@ const messageContextMenuPatch: NavContextMenuPatchCallback = (children, props) =
         group.push(
             <Menu.MenuItem
                 label={`Upload to ${MOCHA_SERVICE_LABEL}`}
-                key="file-upload"
-                id="file-upload"
-                action={() => uploadFile(url)}
+    key = "file-upload"
+    id = "file-upload"
+    action = {() => uploadFile(url)}
             />
         );
     }
@@ -951,18 +951,18 @@ const imageContextMenuPatch: NavContextMenuPatchCallback = (children, props) => 
     if (children.some(child => child?.props?.id === "file-upload-group")) return;
 
     children.push(
-        <Menu.MenuGroup id="file-upload-group">
-            <Menu.MenuItem
+        <Menu.MenuGroup id="file-upload-group" >
+    <Menu.MenuItem
                 label={`Upload to ${MOCHA_SERVICE_LABEL}`}
-                key="file-upload"
-                id="file-upload"
-                action={() => uploadFile(url)}
+key = "file-upload"
+id = "file-upload"
+action = {() => uploadFile(url)}
             />
-        </Menu.MenuGroup>
+    </Menu.MenuGroup>
     );
 };
 
-const ExternalIcon = () => <OpenExternalIcon height={24} width={24} />;
+const ExternalIcon = () => <OpenExternalIcon height={ 24} width = { 24} />;
 
 const channelAttachMenuPatch: NavContextMenuPatchCallback = (children, props) => {
     const channel = props?.channel;
@@ -973,14 +973,14 @@ const channelAttachMenuPatch: NavContextMenuPatchCallback = (children, props) =>
     children.splice(1, 0,
         <Menu.MenuItem
             id="file-upload-manual"
-            key="file-upload-manual"
-            label="Upload to Mocha"
-            iconLeft={ExternalIcon}
-            leadingAccessory={{
-                type: "icon",
-                icon: ExternalIcon
-            }}
-            action={() => uploadPickedFile()}
+            key = "file-upload-manual"
+            label = "Upload to Mocha"
+            iconLeft = { ExternalIcon }
+            leadingAccessory = {{
+        type: "icon",
+        icon: ExternalIcon
+    }}
+action = {() => uploadPickedFile()}
         />
     );
 };

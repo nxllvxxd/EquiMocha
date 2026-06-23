@@ -1,5 +1,5 @@
 import { dialog, IpcMainInvokeEvent } from "electron";
-import { open, stat } from "fs/promises";
+import { open, stat, unlink } from "fs/promises";
 
 const MOCHA_BASE = "https://api.mocha.my";
 const MOCHA_WEB = "https://mocha.my";
@@ -1138,4 +1138,16 @@ export async function chooseFilePath(_: IpcMainInvokeEvent): Promise<{ path: str
     const name = path.split(/[\\/]/).pop() || "upload.bin";
 
     return { path, name };
+}
+
+export async function deleteFile(_: IpcMainInvokeEvent, filePath: string): Promise<{ success: boolean; error?: string; }> {
+    try {
+        await unlink(filePath);
+        return { success: true };
+    } catch (error) {
+        return {
+            success: false,
+            error: error instanceof Error ? error.message : "Unknown error"
+        };
+    }
 }

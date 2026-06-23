@@ -26,6 +26,7 @@
     align-items: center;
     gap: 8px;
     min-width: 0;
+    flex-shrink: 0;
 }
 
 .vc-file-upload-progress-attempt {
@@ -41,14 +42,19 @@
 
 .vc-file-upload-progress-cancel {
     border: none;
-    border-radius: 6px;
-    background: var(--button-danger-background);
-    color: var(--white-500);
-    font-size: 11px;
-    padding: 3px 8px;
+    background: none;
+    color: inherit;
+    font-size: 14px;
+    line-height: 1;
+    padding: 0 2px;
     cursor: pointer;
     flex-shrink: 0;
+    opacity: 0.7;
 }
+
+    .vc-file-upload-progress-cancel:hover {
+        opacity: 1;
+    }
 
 .vc-file-upload-progress-track {
     width: 100%;
@@ -72,13 +78,6 @@
     white-space: nowrap;
 }
 
-.vc-file-upload-progress-wrap[data-phase="failed"] .vc-file-upload-progress-fill {
-    background: var(--status-danger);
-}
-
-.vc-file-upload-progress-wrap[data-phase="success"] .vc-file-upload-progress-fill {
-    background: var(--status-positive);
-}
 
 .vc-file-upload-settings-fallback-order-list {
     display: grid;
