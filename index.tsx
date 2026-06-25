@@ -13,7 +13,7 @@ import { classNameFactory } from "@utils/css";
 import { sendMessage } from "@utils/discord";
 import definePlugin, { OptionType, PluginNative } from "@utils/types";
 import { findByPropsLazy } from "@webpack";
-import { DraftType, FluxDispatcher, Menu, PermissionsBits, PermissionStore, React, SelectedChannelStore, showToast, Toasts, useEffect, UserStore, useState } from "@webpack/common";
+import { DraftType, FluxDispatcher, Menu, PermissionsBits, PermissionStore, React, SelectedChannelStore, SelectedGuildStore, showToast, Toasts, useEffect, UserStore, useState } from "@webpack/common";
 
 const cl = classNameFactory("vc-file-upload-");
 const { getUserMaxFileSize } = findByPropsLazy("getUserMaxFileSize");
@@ -122,6 +122,12 @@ const settings = definePluginSettings({
         type: OptionType.BOOLEAN,
         description: "Log Mocha upload requests and responses to the console",
         default: true
+    },
+    blacklistedServers: {
+        type: OptionType.STRING,
+        description: "Comma-separated server IDs where Mocha upload interception is disabled (uses Discord's default upload instead)",
+        default: "",
+        placeholder: "123456789, 987654321"
     }
 });
 
@@ -147,6 +153,14 @@ const uploadStateListeners = new Set<() => void>();
 
 function isConfigured(): boolean {
     return Boolean(settings.store.apiKey?.trim());
+}
+
+function isServerBlacklisted(): boolean {
+    const guildId = SelectedGuildStore.getGuildId();
+    if (!guildId) return false;
+
+    const raw = settings.store.blacklistedServers ?? "";
+    return raw.split(",").map(s => s.trim()).filter(Boolean).includes(guildId);
 }
 
 function emitUploadState() {
@@ -279,6 +293,7 @@ function interceptUploadAddFiles(event: unknown): void {
     if (payload.draftType !== DraftType.ChannelMessage) return;
 
     if (!settings.store.bypassDiscordUpload || !isConfigured()) return;
+    if (isServerBlacklisted()) return;
 
     const files = [
         ...extractFilesFromValue(payload.files),
@@ -301,6 +316,7 @@ function handlePaste(event: ClipboardEvent) {
     if (files.length === 0) return;
 
     if (!settings.store.autoUploadPastedFiles || !isConfigured()) return;
+    if (isServerBlacklisted()) return;
     if (!shouldInterceptUploadFiles(files, {
         type: "PASTE",
         draftType: DraftType.ChannelMessage
@@ -332,6 +348,7 @@ function handleDragOver(event: DragEvent) {
     if (!files.length) return;
 
     if (!settings.store.bypassDiscordUpload || !isConfigured()) return;
+    if (isServerBlacklisted()) return;
     if (!shouldInterceptUploadFiles(files, {
         type: "DROP",
         draftType: DraftType.ChannelMessage
@@ -348,6 +365,7 @@ function handleDrop(event: DragEvent) {
     if (!files.length) return;
 
     if (!settings.store.bypassDiscordUpload || !isConfigured()) return;
+    if (isServerBlacklisted()) return;
     if (!shouldInterceptUploadFiles(files, {
         type: "DROP",
         draftType: DraftType.ChannelMessage
@@ -365,6 +383,7 @@ function handleFileInputChange(event: Event) {
     if (!files.length) return;
 
     if (!settings.store.bypassDiscordUpload || !isConfigured()) return;
+    if (isServerBlacklisted()) return;
     if (!shouldInterceptUploadFiles(files, {
         type: "FILE_INPUT",
         draftType: DraftType.ChannelMessage
@@ -1072,7 +1091,7 @@ export default definePlugin({
         }
     },
     shouldBypassDiscordUploadSizeCheck(): boolean {
-        return Boolean(settings.store.bypassDiscordUpload) && isConfigured();
+        return Boolean(settings.store.bypassDiscordUpload) && isConfigured() && !isServerBlacklisted();
     },
     renderUploadProgress() {
         return <ProgressBar />;
