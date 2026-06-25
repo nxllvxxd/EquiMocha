@@ -39,6 +39,21 @@ Okay this is a different type of install.
 3. Run `pnpm build` from Equicord root to rebuild the plugin
 4. Run `pnpm inject` to inject the plugin into Discord
 
+## NOTE
+If the cancel button (which is just an X) is not visible, edit your custom theme with this css block:
+```css
+/* EquiMocha cancel button fix */
+.vc-file-upload-progress-cancel {
+    color: oklch(85% 0 0) !important;
+    background: none !important;
+    opacity: 0.7 !important;
+}
+
+.vc-file-upload-progress-cancel:hover {
+    opacity: 1 !important;
+}
+```
+
 ## The Basics
 - Autotriggers on files, either selected or dropped in that are larger than 9MB if the option is enabled
 - Upload other shared files/videos/images to Mocha that are sent by other users in chat by right clicking the file and selecting "Upload to Mocha"
