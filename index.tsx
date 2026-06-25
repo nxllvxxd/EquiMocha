@@ -587,11 +587,11 @@ async function copyUrlToClipboard(url: string): Promise<void> {
     }
 }
 
-async function notifyUploadSuccess(finalUrl: string, copyOnly = false): Promise<void> {
+async function notifyUploadSuccess(finalUrl: string, copyOnly = false, targetChannelId?: string): Promise<void> {
     showToast("Upload successful", Toasts.Type.SUCCESS);
 
     if (!copyOnly && settings.store.autoSend) {
-        sendMessage(SelectedChannelStore.getChannelId(), {
+        sendMessage(targetChannelId ?? SelectedChannelStore.getChannelId(), {
             content: finalUrl
         });
     } else {
@@ -602,7 +602,7 @@ async function notifyUploadSuccess(finalUrl: string, copyOnly = false): Promise<
     }
 }
 
-async function uploadPreparedBlob(fileBlob: Blob, sourceUrl?: string): Promise<void> {
+async function uploadPreparedBlob(fileBlob: Blob, sourceUrl?: string, targetChannelId?: string): Promise<void> {
     const filename = getFilenameFromBlob(fileBlob, sourceUrl);
     setUploadState({
         phase: "uploading",
@@ -628,7 +628,7 @@ async function uploadPreparedBlob(fileBlob: Blob, sourceUrl?: string): Promise<v
         canCancel: false
     });
 
-    await notifyUploadSuccess(uploadedUrl);
+    await notifyUploadSuccess(uploadedUrl, false, targetChannelId);
 }
 
 async function uploadFile(url: string): Promise<void> {
@@ -748,6 +748,7 @@ async function uploadPickedFile(): Promise<void> {
     const selectedFile = await Native.chooseFilePath();
     if (!selectedFile) return;
 
+    const targetChannelId = SelectedChannelStore.getChannelId();
     isUploading = true;
     cancelRequested = false;
 
@@ -774,7 +775,7 @@ async function uploadPickedFile(): Promise<void> {
             canCancel: false
         });
 
-        await notifyUploadSuccess(uploadedUrl);
+        await notifyUploadSuccess(uploadedUrl, false, targetChannelId);
     } catch (error) {
         const message = error instanceof Error ? error.message : "Unknown error";
         if (isUploadCancelledError(error)) {
@@ -808,6 +809,7 @@ async function uploadProvidedFiles(files: readonly File[]): Promise<void> {
     const uploadFiles = files.filter(file => Boolean(file));
     if (!uploadFiles.length) return;
 
+    const targetChannelId = SelectedChannelStore.getChannelId();
     isUploading = true;
     cancelRequested = false;
 
@@ -830,7 +832,7 @@ async function uploadProvidedFiles(files: readonly File[]): Promise<void> {
                 canCancel: true
             });
 
-            await uploadPreparedBlob(file);
+            await uploadPreparedBlob(file, undefined, targetChannelId);
         }
     } catch (error) {
         const message = error instanceof Error ? error.message : "Unknown error";
