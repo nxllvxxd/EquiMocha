@@ -5,6 +5,11 @@
 ██      ██ ▄▄ ██ ██    ██ ██ ██  ██  ██ ██    ██ ██      ██   ██ ██   ██ 
 ███████  ██████   ██████  ██ ██      ██  ██████   ██████ ██   ██ ██   ██
 ```
+
+<p align="center">
+  <img src=".github/resources/uploading.png" alt="EquiMocha upload" width="720">
+</p>
+
 # INSTRUCTIONS (PLEASE READ)
 Requirements:
 - [NodeJS 18 or higher](https://nodejs.org/en/download)
@@ -34,13 +39,22 @@ Okay this is a different type of install.
 3. Run `pnpm build` from Equicord root to rebuild the plugin
 4. Run `pnpm inject` to inject the plugin into Discord
 
-
 ## The Basics
-- Autotriggers on files, either selected or dropped in that are larger than 9MB
-- Uploads to a folder, the stock being /Discord, then separated in folders by date
+- Autotriggers on files, either selected or dropped in that are larger than 9MB if the option is enabled
+- Upload other shared files/videos/images to Mocha that are sent by other users in chat by right clicking the file and selecting "Upload to Mocha"
+- Upload to Mocha by right clicking the plus sign in the Discord client and selecting "Upload to Mocha"
+- Uploads to a folder named Discord in your Mocha root, then separated in folders by date within
 - Shows progress of upload in the Discord client
 - Auto sends the link once upload is complete
 - If files land under the standard max for Discord without Nitro it will just upload through Discord unless you have the option to force upload to Mocha enabled
 - Can be disabled for certain servers via the settings menu
 
-
+<p align="center">
+  <img src=".github/resources/settings1.png" alt="EquiMocha settings window" width="720">
+</p>
+<p align="center">
+  <img src=".github/resources/settings2.png" alt="EquiMocha settings window" width="720">
+</p>
+<p align="center">
+  <img src=".github/resources/settings3.png" alt="EquiMocha settings window" width="720">
+</p>
